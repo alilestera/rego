@@ -91,6 +91,7 @@ Loop:
 			case r.workerChan <- r.waiting.Front().Value.(func()):
 				r.waiting.Remove(r.waiting.Front())
 			}
+			continue
 		}
 
 		select {
