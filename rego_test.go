@@ -27,8 +27,8 @@ func TestRego(t *testing.T) {
 			respChan <- v
 		})
 	}
-	close(respChan)
 	r.Stop()
+	close(respChan)
 
 	respSet := map[string]bool{}
 	for v := range respChan {
