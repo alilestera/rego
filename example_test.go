@@ -14,30 +14,26 @@
  * limitations under the License.
  */
 
-package rego
+package rego_test
 
-import "testing"
+import (
+	"fmt"
+	"github.com/alilestera/rego"
+)
 
-func TestRego(t *testing.T) {
-	r := New(3)
+func ExampleRego_Submit() {
+	r := rego.New(3)
+	defer r.Stop()
 	requests := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
-	respChan := make(chan string, len(requests))
 	for _, v := range requests {
 		r.Submit(func() {
-			respChan <- v
+			fmt.Println(v)
 		})
 	}
-	r.Stop()
-	close(respChan)
-
-	respSet := map[string]bool{}
-	for v := range respChan {
-		respSet[v] = true
-	}
-
-	for _, v := range requests {
-		if !respSet[v] {
-			t.Errorf("expected %q, got nothing", v)
-		}
-	}
+	// Unordered Output:
+	// alpha
+	// beta
+	// gamma
+	// delta
+	// epsilon
 }
