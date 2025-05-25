@@ -18,6 +18,7 @@ package rego
 
 import (
 	"container/list"
+	"context"
 	"sync"
 	"time"
 )
@@ -34,7 +35,10 @@ type Rego struct {
 	waiting     *list.List
 
 	shutdownChan chan struct{}
+	pauseChan    chan struct{}
+	stopLock     sync.Mutex
 	stopOnce     sync.Once
+	stopped      bool
 }
 
 func New(maxWorkers int) *Rego {
@@ -49,6 +53,7 @@ func New(maxWorkers int) *Rego {
 		taskChan:     make(chan func()),
 		waiting:      list.New(),
 		shutdownChan: make(chan struct{}),
+		pauseChan:    make(chan struct{}),
 	}
 
 	go r.dispatch()
@@ -62,9 +67,35 @@ func (r *Rego) Submit(task func()) {
 	}
 }
 
+func (r *Rego) Pause(ctx context.Context) {
+	r.stopLock.Lock()
+	defer r.stopLock.Unlock()
+	if r.stopped {
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(r.maxWorkers)
+	for range r.maxWorkers {
+		r.Submit(func() {
+			wg.Done()
+			select {
+			case <-ctx.Done():
+			case <-r.pauseChan:
+			}
+		})
+	}
+	wg.Wait()
+}
+
 func (r *Rego) Stop() {
 	r.stopOnce.Do(func() {
+		r.stopLock.Lock()
+		r.stopped = true
+		r.stopLock.Unlock()
+
 		close(r.taskChan)
+		close(r.pauseChan)
 		<-r.shutdownChan
 		close(r.workerChan)
 	})
