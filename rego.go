@@ -67,6 +67,18 @@ func (r *Rego) Submit(task func()) {
 	}
 }
 
+func (r *Rego) SubmitWait(task func()) {
+	if task == nil {
+		return
+	}
+	done := make(chan struct{})
+	r.Submit(func() {
+		task()
+		close(done)
+	})
+	<-done
+}
+
 func (r *Rego) Pause(ctx context.Context) {
 	r.stopLock.Lock()
 	defer r.stopLock.Unlock()

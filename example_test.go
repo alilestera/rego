@@ -18,6 +18,7 @@ package rego_test
 
 import (
 	"fmt"
+
 	"github.com/alilestera/rego"
 )
 
@@ -36,4 +37,21 @@ func ExampleRego_Submit() {
 	// gamma
 	// delta
 	// epsilon
+}
+
+func ExampleRego_SubmitWait() {
+	r := rego.New(3)
+	defer r.Stop()
+	requests := []string{"foo", "bar", "foobar", "anything", "else"}
+	for _, v := range requests {
+		r.SubmitWait(func() {
+			fmt.Println(v)
+		})
+	}
+	// Output:
+	// foo
+	// bar
+	// foobar
+	// anything
+	// else
 }
