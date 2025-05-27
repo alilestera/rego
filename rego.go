@@ -17,10 +17,11 @@
 package rego
 
 import (
-	"container/list"
 	"context"
 	"sync"
 	"time"
+
+	"github.com/gammazero/deque"
 )
 
 const (
@@ -32,7 +33,7 @@ type Rego struct {
 	workerCount int
 	workerChan  chan func()
 	taskChan    chan func()
-	waiting     *list.List
+	waiting     *deque.Deque[func()]
 
 	shutdownChan chan struct{}
 	pauseChan    chan struct{}
@@ -51,7 +52,7 @@ func New(maxWorkers int) *Rego {
 		maxWorkers:   maxWorkers,
 		workerChan:   make(chan func()),
 		taskChan:     make(chan func()),
-		waiting:      list.New(),
+		waiting:      &deque.Deque[func()]{},
 		shutdownChan: make(chan struct{}),
 		pauseChan:    make(chan struct{}),
 	}
@@ -110,6 +111,8 @@ func (r *Rego) Stop() {
 		close(r.pauseChan)
 		<-r.shutdownChan
 		close(r.workerChan)
+
+		r.waiting = nil
 	})
 }
 
@@ -131,8 +134,8 @@ Loop:
 					break Loop
 				}
 				r.waiting.PushBack(task)
-			case r.workerChan <- r.waiting.Front().Value.(func()):
-				r.waiting.Remove(r.waiting.Front())
+			default:
+				r.workerChan <- r.waiting.PopFront()
 			}
 			continue
 		}
@@ -168,7 +171,7 @@ Loop:
 	}
 
 	for r.waiting.Len() > 0 {
-		r.workerChan <- r.waiting.Remove(r.waiting.Front()).(func())
+		r.workerChan <- r.waiting.PopFront()
 	}
 
 	// Stop all workers
