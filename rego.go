@@ -29,18 +29,19 @@ const (
 )
 
 type Rego struct {
-	workerCache sync.Pool
 	maxWorkers  int
 	workerCount int
-	workerChan  chan func()
-	taskChan    chan func()
-	waiting     *deque.Deque[func()]
 
-	shutdownChan chan struct{}
-	pauseChan    chan struct{}
-	stopLock     sync.Mutex
-	stopOnce     sync.Once
-	stopped      bool
+	submit  chan func()
+	task    chan func()
+	waiting *deque.Deque[func()]
+
+	allDone chan struct{}
+	pause   chan struct{}
+
+	stopLock sync.Mutex
+	stopOnce sync.Once
+	stopped  bool
 }
 
 func New(maxWorkers int) *Rego {
@@ -50,12 +51,12 @@ func New(maxWorkers int) *Rego {
 	}
 
 	r := &Rego{
-		maxWorkers:   maxWorkers,
-		workerChan:   make(chan func()),
-		taskChan:     make(chan func()),
-		waiting:      &deque.Deque[func()]{},
-		shutdownChan: make(chan struct{}),
-		pauseChan:    make(chan struct{}),
+		maxWorkers: maxWorkers,
+		submit:     make(chan func(), 1),
+		task:       make(chan func()),
+		waiting:    &deque.Deque[func()]{},
+		allDone:    make(chan struct{}),
+		pause:      make(chan struct{}),
 	}
 
 	go r.dispatch()
@@ -65,7 +66,7 @@ func New(maxWorkers int) *Rego {
 
 func (r *Rego) Submit(task func()) {
 	if task != nil {
-		r.taskChan <- task
+		r.submit <- task
 	}
 }
 
@@ -74,10 +75,10 @@ func (r *Rego) SubmitWait(task func()) {
 		return
 	}
 	done := make(chan struct{})
-	r.Submit(func() {
+	r.submit <- func() {
 		task()
 		close(done)
-	})
+	}
 	<-done
 }
 
@@ -95,7 +96,7 @@ func (r *Rego) Pause(ctx context.Context) {
 			wg.Done()
 			select {
 			case <-ctx.Done():
-			case <-r.pauseChan:
+			case <-r.pause:
 			}
 		})
 	}
@@ -108,10 +109,10 @@ func (r *Rego) Stop() {
 		r.stopped = true
 		r.stopLock.Unlock()
 
-		close(r.taskChan)
-		close(r.pauseChan)
-		<-r.shutdownChan
-		close(r.workerChan)
+		close(r.submit)
+		close(r.pause)
+		<-r.allDone
+		close(r.task)
 
 		r.waiting = nil
 	})
@@ -130,25 +131,25 @@ Loop:
 		// tasks are pushed to the waiting queue.
 		if r.waiting.Len() > 0 {
 			select {
-			case task, ok := <-r.taskChan:
+			case fn, ok := <-r.submit:
 				if !ok {
 					break Loop
 				}
-				r.waiting.PushBack(task)
+				r.waiting.PushBack(fn)
 			default:
-				r.workerChan <- r.waiting.PopFront()
+				r.task <- r.waiting.PopFront()
 			}
 			continue
 		}
 
 		select {
-		case task, ok := <-r.taskChan:
+		case fn, ok := <-r.submit:
 			if !ok {
 				break Loop
 			}
 			// Execute the task or add it to the waiting queue.
 			select {
-			case r.workerChan <- task:
+			case r.task <- fn:
 			default:
 				// If workerCount is less than maxWorkers, create a new worker.
 				if r.workerCount < r.maxWorkers {
@@ -156,13 +157,13 @@ Loop:
 					wg.Add(1)
 					go func() {
 						defer wg.Done()
-						worker(r.workerChan)
+						worker(r.task)
 					}()
 					r.workerCount++
 
-					r.workerChan <- task
+					r.task <- fn
 				} else {
-					r.waiting.PushBack(task)
+					r.waiting.PushBack(fn)
 				}
 			}
 			idle = false
@@ -178,33 +179,33 @@ Loop:
 	}
 
 	for r.waiting.Len() > 0 {
-		r.workerChan <- r.waiting.PopFront()
+		r.task <- r.waiting.PopFront()
 	}
 
 	// Stop all workers
 	for r.workerCount > 0 {
-		r.workerChan <- nil
+		r.task <- nil
 		r.workerCount--
 	}
 	wg.Wait()
 
-	close(r.shutdownChan)
+	close(r.allDone)
 }
 
 func (r *Rego) tryKillIdleWorker() bool {
 	select {
-	case r.workerChan <- nil:
+	case r.task <- nil:
 		return true
 	default:
 		return false
 	}
 }
 
-func worker(workerChan <-chan func()) {
-	for task := range workerChan {
-		if task == nil {
+func worker(task <-chan func()) {
+	for fn := range task {
+		if fn == nil {
 			return
 		}
-		task()
+		fn()
 	}
 }
