@@ -29,6 +29,7 @@ const (
 )
 
 type Rego struct {
+	workerCache sync.Pool
 	maxWorkers  int
 	workerCount int
 	workerChan  chan func()
@@ -145,15 +146,21 @@ Loop:
 			if !ok {
 				break Loop
 			}
-			// Execute the task or add it to the waiting queue
+			// Execute the task or add it to the waiting queue.
 			select {
 			case r.workerChan <- task:
 			default:
-				// If workerCount is less than maxWorkers, create a new worker
+				// If workerCount is less than maxWorkers, create a new worker.
 				if r.workerCount < r.maxWorkers {
+					// worker returns at latest when workerChan is closed.
 					wg.Add(1)
-					go worker(task, r.workerChan, &wg)
+					go func() {
+						defer wg.Done()
+						worker(r.workerChan)
+					}()
 					r.workerCount++
+
+					r.workerChan <- task
 				} else {
 					r.waiting.PushBack(task)
 				}
@@ -193,11 +200,11 @@ func (r *Rego) tryKillIdleWorker() bool {
 	}
 }
 
-func worker(task func(), workerChan chan func(), wg *sync.WaitGroup) {
-	defer wg.Done()
-	// If the task is nil, exit the worker
-	for task != nil {
+func worker(workerChan <-chan func()) {
+	for task := range workerChan {
+		if task == nil {
+			return
+		}
 		task()
-		task = <-workerChan
 	}
 }
