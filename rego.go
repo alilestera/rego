@@ -19,6 +19,7 @@ package rego
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gammazero/deque"
@@ -32,9 +33,11 @@ type Rego struct {
 	maxWorkers  int
 	workerCount int
 
-	submit  chan func()
-	task    chan func()
-	waiting *deque.Deque[func()]
+	submit chan func()
+	task   chan func()
+
+	waitingQueue *deque.Deque[func()]
+	waiting      int32
 
 	allDone chan struct{}
 	pause   chan struct{}
@@ -51,12 +54,12 @@ func New(maxWorkers int) *Rego {
 	}
 
 	r := &Rego{
-		maxWorkers: maxWorkers,
-		submit:     make(chan func(), 1),
-		task:       make(chan func()),
-		waiting:    &deque.Deque[func()]{},
-		allDone:    make(chan struct{}),
-		pause:      make(chan struct{}),
+		maxWorkers:   maxWorkers,
+		submit:       make(chan func(), 1),
+		task:         make(chan func()),
+		waitingQueue: &deque.Deque[func()]{},
+		allDone:      make(chan struct{}),
+		pause:        make(chan struct{}),
 	}
 
 	go r.dispatch()
@@ -80,6 +83,10 @@ func (r *Rego) SubmitWait(task func()) {
 		close(done)
 	}
 	<-done
+}
+
+func (r *Rego) Waiting() int {
+	return int(atomic.LoadInt32(&r.waiting))
 }
 
 func (r *Rego) Pause(ctx context.Context) {
@@ -113,8 +120,6 @@ func (r *Rego) Stop() {
 		close(r.pause)
 		<-r.allDone
 		close(r.task)
-
-		r.waiting = nil
 	})
 }
 
@@ -124,20 +129,20 @@ func (r *Rego) dispatch() {
 	timeout := time.NewTimer(idleTimeout)
 	defer timeout.Stop()
 
-Loop:
+loop:
 	for {
 		// If there are tasks in the waiting queue, the number of workers has
 		// reached maxWorkers. These tasks are executed first, and incoming
 		// tasks are pushed to the waiting queue.
-		if r.waiting.Len() > 0 {
+		if r.Waiting() > 0 {
+			r.processWaiting()
 			select {
 			case fn, ok := <-r.submit:
 				if !ok {
-					break Loop
+					break loop
 				}
-				r.waiting.PushBack(fn)
+				r.enqueueWaiting(fn)
 			default:
-				r.task <- r.waiting.PopFront()
 			}
 			continue
 		}
@@ -145,7 +150,7 @@ Loop:
 		select {
 		case fn, ok := <-r.submit:
 			if !ok {
-				break Loop
+				break loop
 			}
 			// Execute the task or add it to the waiting queue.
 			select {
@@ -163,7 +168,7 @@ Loop:
 
 					r.task <- fn
 				} else {
-					r.waiting.PushBack(fn)
+					r.enqueueWaiting(fn)
 				}
 			}
 			idle = false
@@ -178,8 +183,8 @@ Loop:
 		}
 	}
 
-	for r.waiting.Len() > 0 {
-		r.task <- r.waiting.PopFront()
+	for r.Waiting() > 0 {
+		r.processWaiting()
 	}
 
 	// Stop all workers
@@ -199,6 +204,21 @@ func (r *Rego) tryKillIdleWorker() bool {
 	default:
 		return false
 	}
+}
+
+func (r *Rego) enqueueWaiting(fn func()) {
+	r.waitingQueue.PushBack(fn)
+	r.addWaiting(1)
+}
+
+func (r *Rego) processWaiting() {
+	fn := r.waitingQueue.PopFront()
+	r.task <- fn
+	r.addWaiting(-1)
+}
+
+func (r *Rego) addWaiting(delta int32) {
+	atomic.AddInt32(&r.waiting, delta)
 }
 
 func worker(task <-chan func()) {
