@@ -53,3 +53,19 @@ func TestSubmit(t *testing.T) {
 		}
 	}
 }
+
+func TestRegoMaxWorkers(t *testing.T) {
+	maxWorkers := 5
+	r := rego.New(maxWorkers)
+	defer r.Stop()
+
+	for range maxWorkers * 10 {
+		r.Submit(func() {
+			running := r.Running()
+			if running > maxWorkers {
+				t.Errorf("running workers exceeded maxWorkers: %d > %d", running, maxWorkers)
+			}
+			time.Sleep(10 * time.Millisecond)
+		})
+	}
+}
