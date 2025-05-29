@@ -30,8 +30,8 @@ const (
 )
 
 type Rego struct {
-	maxWorkers  int
-	workerCount int
+	maxWorkers int
+	running    int32
 
 	submit chan func()
 	task   chan func()
@@ -55,7 +55,7 @@ func New(maxWorkers int) *Rego {
 
 	r := &Rego{
 		maxWorkers:   maxWorkers,
-		submit:       make(chan func(), 1),
+		submit:       make(chan func()),
 		task:         make(chan func()),
 		waitingQueue: &deque.Deque[func()]{},
 		allDone:      make(chan struct{}),
@@ -83,6 +83,10 @@ func (r *Rego) SubmitWait(task func()) {
 		close(done)
 	}
 	<-done
+}
+
+func (r *Rego) Running() int {
+	return int(atomic.LoadInt32(&r.running))
 }
 
 func (r *Rego) Waiting() int {
@@ -125,12 +129,15 @@ func (r *Rego) Stop() {
 
 func (r *Rego) dispatch() {
 	var wg sync.WaitGroup
-	var idle bool
 	timeout := time.NewTimer(idleTimeout)
 	defer timeout.Stop()
 
 loop:
 	for {
+		if r.Running() < r.maxWorkers {
+			wg.Add(1)
+			go r.worker(r.task, &wg)
+		}
 		// If there are tasks in the waiting queue, the number of workers has
 		// reached maxWorkers. These tasks are executed first, and incoming
 		// tasks are pushed to the waiting queue.
@@ -156,53 +163,58 @@ loop:
 			select {
 			case r.task <- fn:
 			default:
-				// If workerCount is less than maxWorkers, create a new worker.
-				if r.workerCount < r.maxWorkers {
-					// worker returns at latest when workerChan is closed.
-					wg.Add(1)
-					go func() {
-						defer wg.Done()
-						worker(r.task)
-					}()
-					r.workerCount++
-
-					r.task <- fn
-				} else {
-					r.enqueueWaiting(fn)
-				}
+				r.enqueueWaiting(fn)
 			}
-			idle = false
 		case <-timeout.C:
-			if idle && r.workerCount > 0 {
-				if r.tryKillIdleWorker() {
-					r.workerCount--
-				}
+			if r.Running() > 0 {
+				r.releaseWorker(false)
 			}
-			idle = true
 			timeout.Reset(idleTimeout)
 		}
 	}
 
-	for r.Waiting() > 0 {
+	for range r.Waiting() {
 		r.processWaiting()
 	}
 
 	// Stop all workers
-	for r.workerCount > 0 {
-		r.task <- nil
-		r.workerCount--
+	for range r.Running() {
+		r.releaseWorker(true)
 	}
 	wg.Wait()
 
 	close(r.allDone)
 }
 
-func (r *Rego) tryKillIdleWorker() bool {
+func (r *Rego) addRunning(delta int32) {
+	atomic.AddInt32(&r.running, delta)
+}
+
+func (r *Rego) addWaiting(delta int32) {
+	atomic.AddInt32(&r.waiting, delta)
+}
+
+func (r *Rego) worker(task <-chan func(), wg *sync.WaitGroup) {
+	defer func() {
+		r.addRunning(-1)
+		wg.Done()
+	}()
+	r.addRunning(1)
+	for fn := range task {
+		if fn == nil {
+			return
+		}
+		fn()
+	}
+}
+
+func (r *Rego) releaseWorker(force bool) {
 	select {
 	case r.task <- nil:
-		return true
 	default:
-		return false
+		if force {
+			r.task <- nil
+		}
 	}
 }
 
@@ -215,17 +227,4 @@ func (r *Rego) processWaiting() {
 	fn := r.waitingQueue.PopFront()
 	r.task <- fn
 	r.addWaiting(-1)
-}
-
-func (r *Rego) addWaiting(delta int32) {
-	atomic.AddInt32(&r.waiting, delta)
-}
-
-func worker(task <-chan func()) {
-	for fn := range task {
-		if fn == nil {
-			return
-		}
-		fn()
-	}
 }
