@@ -17,6 +17,7 @@
 package rego
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,14 +33,15 @@ type Rego struct {
 	maxWorkers int
 	running    int32
 
-	submit chan func()
-	task   chan func()
-
+	submit       chan func()
+	task         chan func()
 	waitingQueue *deque.Deque[func()]
 	waiting      int32
 
-	allDone   chan struct{}
-	closeOnce sync.Once
+	dismiss     context.Context
+	dismissFunc context.CancelFunc
+	allDone     chan struct{}
+	closeOnce   sync.Once
 }
 
 func New(maxWorkers int) *Rego {
@@ -48,12 +50,16 @@ func New(maxWorkers int) *Rego {
 		maxWorkers = 1
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	r := &Rego{
 		maxWorkers:   maxWorkers,
 		submit:       make(chan func()),
 		task:         make(chan func()),
 		waitingQueue: &deque.Deque[func()]{},
-		allDone:      make(chan struct{}),
+
+		dismiss:     ctx,
+		dismissFunc: cancel,
+		allDone:     make(chan struct{}),
 	}
 
 	go r.dispatch()
@@ -88,7 +94,20 @@ func (r *Rego) Waiting() int {
 }
 
 func (r *Rego) Release() {
+	r.release(false)
+}
+
+func (r *Rego) ReleaseWait() {
+	r.release(true)
+}
+
+func (r *Rego) release(wait bool) {
 	r.closeOnce.Do(func() {
+		if wait {
+			defer r.dismissFunc()
+		} else {
+			r.dismissFunc()
+		}
 		close(r.submit)
 		<-r.allDone
 		close(r.task)
@@ -110,7 +129,6 @@ loop:
 		// reached maxWorkers. These tasks are executed first, and incoming
 		// tasks are pushed to the waiting queue.
 		if r.Waiting() > 0 {
-			r.processWaiting()
 			select {
 			case fn, ok := <-r.submit:
 				if !ok {
@@ -118,6 +136,7 @@ loop:
 				}
 				r.enqueueWaiting(fn)
 			default:
+				r.processWaiting()
 			}
 			continue
 		}
@@ -141,8 +160,12 @@ loop:
 		}
 	}
 
-	for range r.Waiting() {
-		r.processWaiting()
+	select {
+	case <-r.dismiss.Done():
+	default:
+		for range r.Waiting() {
+			r.processWaiting()
+		}
 	}
 	r.releaseAllWorkers()
 	wg.Wait()

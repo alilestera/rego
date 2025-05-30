@@ -38,7 +38,7 @@ func TestSubmit(t *testing.T) {
 			respChan <- req
 		})
 	}
-	r.Release()
+	r.ReleaseWait()
 	close(respChan)
 
 	respSet := make(map[string]bool)
@@ -55,9 +55,10 @@ func TestSubmit(t *testing.T) {
 }
 
 func TestRegoMaxWorkers(t *testing.T) {
+	defer goleak.VerifyNone(t)
 	maxWorkers := 5
 	r := rego.New(maxWorkers)
-	defer r.Release()
+	defer r.ReleaseWait()
 
 	for range maxWorkers * 10 {
 		r.Submit(func() {

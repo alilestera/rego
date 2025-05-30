@@ -24,7 +24,7 @@ import (
 
 func ExampleRego_Submit() {
 	r := rego.New(3)
-	defer r.Release()
+	defer r.ReleaseWait()
 	requests := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
 	for _, v := range requests {
 		r.Submit(func() {
@@ -41,7 +41,7 @@ func ExampleRego_Submit() {
 
 func ExampleRego_SubmitWait() {
 	r := rego.New(3)
-	defer r.Release()
+	defer r.ReleaseWait()
 	requests := []string{"foo", "bar", "foobar", "anything", "else"}
 	for _, v := range requests {
 		r.SubmitWait(func() {
