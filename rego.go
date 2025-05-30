@@ -17,7 +17,6 @@
 package rego
 
 import (
-	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,12 +38,8 @@ type Rego struct {
 	waitingQueue *deque.Deque[func()]
 	waiting      int32
 
-	allDone chan struct{}
-	pause   chan struct{}
-
-	stopLock sync.Mutex
-	stopOnce sync.Once
-	stopped  bool
+	allDone   chan struct{}
+	closeOnce sync.Once
 }
 
 func New(maxWorkers int) *Rego {
@@ -59,7 +54,6 @@ func New(maxWorkers int) *Rego {
 		task:         make(chan func()),
 		waitingQueue: &deque.Deque[func()]{},
 		allDone:      make(chan struct{}),
-		pause:        make(chan struct{}),
 	}
 
 	go r.dispatch()
@@ -93,35 +87,9 @@ func (r *Rego) Waiting() int {
 	return int(atomic.LoadInt32(&r.waiting))
 }
 
-func (r *Rego) Pause(ctx context.Context) {
-	r.stopLock.Lock()
-	defer r.stopLock.Unlock()
-	if r.stopped {
-		return
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(r.maxWorkers)
-	for range r.maxWorkers {
-		r.Submit(func() {
-			wg.Done()
-			select {
-			case <-ctx.Done():
-			case <-r.pause:
-			}
-		})
-	}
-	wg.Wait()
-}
-
-func (r *Rego) Stop() {
-	r.stopOnce.Do(func() {
-		r.stopLock.Lock()
-		r.stopped = true
-		r.stopLock.Unlock()
-
+func (r *Rego) Release() {
+	r.closeOnce.Do(func() {
 		close(r.submit)
-		close(r.pause)
 		<-r.allDone
 		close(r.task)
 	})
