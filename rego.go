@@ -167,7 +167,7 @@ loop:
 			}
 		case <-timeout.C:
 			if r.Running() > 0 {
-				r.releaseWorker(false)
+				r.tryReleaseWorker()
 			}
 			timeout.Reset(idleTimeout)
 		}
@@ -176,11 +176,7 @@ loop:
 	for range r.Waiting() {
 		r.processWaiting()
 	}
-
-	// Stop all workers
-	for range r.Running() {
-		r.releaseWorker(true)
-	}
+	r.releaseAllWorkers()
 	wg.Wait()
 
 	close(r.allDone)
@@ -210,13 +206,16 @@ func (r *Rego) runWorker(task <-chan func(), wg *sync.WaitGroup) {
 	}()
 }
 
-func (r *Rego) releaseWorker(force bool) {
+func (r *Rego) tryReleaseWorker() {
 	select {
 	case r.task <- nil:
 	default:
-		if force {
-			r.task <- nil
-		}
+	}
+}
+
+func (r *Rego) releaseAllWorkers() {
+	for r.Running() > 0 {
+		r.tryReleaseWorker()
 	}
 }
 
