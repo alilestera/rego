@@ -136,7 +136,7 @@ loop:
 	for {
 		if r.Running() < r.maxWorkers {
 			wg.Add(1)
-			go r.worker(r.task, &wg)
+			r.runWorker(r.task, &wg)
 		}
 		// If there are tasks in the waiting queue, the number of workers has
 		// reached maxWorkers. These tasks are executed first, and incoming
@@ -194,18 +194,20 @@ func (r *Rego) addWaiting(delta int32) {
 	atomic.AddInt32(&r.waiting, delta)
 }
 
-func (r *Rego) worker(task <-chan func(), wg *sync.WaitGroup) {
-	defer func() {
-		r.addRunning(-1)
-		wg.Done()
-	}()
+func (r *Rego) runWorker(task <-chan func(), wg *sync.WaitGroup) {
 	r.addRunning(1)
-	for fn := range task {
-		if fn == nil {
-			return
+	go func() {
+		defer func() {
+			r.addRunning(-1)
+			wg.Done()
+		}()
+		for fn := range task {
+			if fn == nil {
+				return
+			}
+			fn()
 		}
-		fn()
-	}
+	}()
 }
 
 func (r *Rego) releaseWorker(force bool) {
