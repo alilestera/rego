@@ -25,10 +25,6 @@ import (
 	"github.com/gammazero/deque"
 )
 
-const (
-	idleTimeout = 2 * time.Second
-)
-
 type Rego struct {
 	capacity int
 	running  int32
