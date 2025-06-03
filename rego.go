@@ -30,8 +30,8 @@ const (
 )
 
 type Rego struct {
-	maxWorkers int
-	running    int32
+	capacity int
+	running  int32
 
 	submit       chan func()
 	task         chan func()
@@ -42,17 +42,27 @@ type Rego struct {
 	dismissFunc context.CancelFunc
 	allDone     chan struct{}
 	closeOnce   sync.Once
+
+	options options
 }
 
-func New(maxWorkers int) *Rego {
+func New(size int, opts ...Option) *Rego {
 	// Require at least one worker.
-	if maxWorkers < 1 {
-		maxWorkers = 1
+	if size < 1 {
+		size = 1
+	}
+
+	o := options{
+		minWorkers:  DefaultMinWorkers,
+		idleTimeout: DefaultIdleTimeout,
+	}
+	for _, opt := range opts {
+		opt(&o)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Rego{
-		maxWorkers:   maxWorkers,
+		capacity:     size,
 		submit:       make(chan func()),
 		task:         make(chan func()),
 		waitingQueue: &deque.Deque[func()]{},
@@ -60,6 +70,8 @@ func New(maxWorkers int) *Rego {
 		dismiss:     ctx,
 		dismissFunc: cancel,
 		allDone:     make(chan struct{}),
+
+		options: o,
 	}
 
 	go r.dispatch()
@@ -85,12 +97,20 @@ func (r *Rego) SubmitWait(task func()) {
 	<-done
 }
 
+func (r *Rego) Cap() int {
+	return r.capacity
+}
+
 func (r *Rego) Running() int {
 	return int(atomic.LoadInt32(&r.running))
 }
 
 func (r *Rego) Waiting() int {
 	return int(atomic.LoadInt32(&r.waiting))
+}
+
+func (r *Rego) MinWorkers() int {
+	return r.options.minWorkers
 }
 
 func (r *Rego) Release() {
@@ -116,12 +136,12 @@ func (r *Rego) release(wait bool) {
 
 func (r *Rego) dispatch() {
 	var wg sync.WaitGroup
-	timeout := time.NewTimer(idleTimeout)
+	timeout := time.NewTimer(r.options.idleTimeout)
 	defer timeout.Stop()
 
 loop:
 	for {
-		if r.Running() < r.maxWorkers {
+		if r.Running() < r.Cap() {
 			wg.Add(1)
 			r.runWorker(r.task, &wg)
 		}
@@ -153,10 +173,10 @@ loop:
 				r.enqueueWaiting(fn)
 			}
 		case <-timeout.C:
-			if r.Running() > 0 {
+			if r.Running() > r.MinWorkers() {
 				r.tryReleaseWorker()
 			}
-			timeout.Reset(idleTimeout)
+			timeout.Reset(r.options.idleTimeout)
 		}
 	}
 
