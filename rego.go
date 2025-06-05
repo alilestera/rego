@@ -37,7 +37,8 @@ type Rego struct {
 	dismiss     context.Context
 	dismissFunc context.CancelFunc
 	allDone     chan struct{}
-	closeOnce   sync.Once
+
+	state int32
 
 	options options
 }
@@ -76,15 +77,18 @@ func New(size int, opts ...Option) *Rego {
 }
 
 func (r *Rego) Submit(task func()) {
-	if task != nil {
-		r.submit <- task
+	if r.IsClosed() || task == nil {
+		return
 	}
+
+	r.submit <- task
 }
 
 func (r *Rego) SubmitWait(task func()) {
-	if task == nil {
+	if r.IsClosed() || task == nil {
 		return
 	}
+
 	done := make(chan struct{})
 	r.submit <- func() {
 		task()
@@ -117,17 +121,23 @@ func (r *Rego) ReleaseWait() {
 	r.release(true)
 }
 
+func (r *Rego) IsClosed() bool {
+	return atomic.LoadInt32(&r.state) == Closed
+}
+
 func (r *Rego) release(wait bool) {
-	r.closeOnce.Do(func() {
-		if wait {
-			defer r.dismissFunc()
-		} else {
-			r.dismissFunc()
-		}
-		close(r.submit)
-		<-r.allDone
-		close(r.task)
-	})
+	if !atomic.CompareAndSwapInt32(&r.state, Opened, Closed) {
+		return
+	}
+
+	if wait {
+		defer r.dismissFunc()
+	} else {
+		r.dismissFunc()
+	}
+	close(r.submit)
+	<-r.allDone
+	close(r.task)
 }
 
 func (r *Rego) dispatch() {

@@ -22,3 +22,8 @@ const (
 	DefaultMinWorkers  = 0
 	DefaultIdleTimeout = 2 * time.Second
 )
+
+const (
+	Opened = iota
+	Closed
+)
