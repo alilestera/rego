@@ -161,6 +161,8 @@ func (r *Rego) release(wait bool) {
 	close(r.submit)
 	<-r.allDone
 	close(r.task)
+
+	r.waitingQueue = nil
 }
 
 func (r *Rego) dispatch() {
