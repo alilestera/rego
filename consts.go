@@ -19,11 +19,15 @@ package rego
 import "time"
 
 const (
-	DefaultMinWorkers  = 0
+	// DefaultMinWorkers is the default minimum number of workers to keep alive.
+	DefaultMinWorkers = 0
+	// DefaultIdleTimeout is the default timeout for idle workers.
 	DefaultIdleTimeout = 2 * time.Second
 )
 
 const (
+	// Opened represents that the Rego is opened.
 	Opened = iota
+	// Closed represents that the Rego is closed.
 	Closed
 )

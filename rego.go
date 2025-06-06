@@ -25,24 +25,38 @@ import (
 	"github.com/gammazero/deque"
 )
 
+// Rego is a goroutine pool.
 type Rego struct {
+	// capacity is the maximum number of workers.
 	capacity int
-	running  int32
+	// running is the number of currently running workers.
+	running int32
 
-	submit       chan func()
-	task         chan func()
+	//  submit and task are used to communicate between the dispatcher and workers.
+	submit chan func()
+	task   chan func()
+	// waitingQueue is used to store tasks waiting to be executed.
 	waitingQueue *deque.Deque[func()]
-	waiting      int32
+	// waiting is the number of tasks waiting to be executed.
+	waiting int32
 
-	dismiss     context.Context
+	// dismiss is used to let dispatcher skip the waiting queue.
+	dismiss context.Context
+	// dismissFunc is used to cancel the dismiss context.
 	dismissFunc context.CancelFunc
-	allDone     chan struct{}
+	// allDone is used to signal the end of the dispatcher.
+	allDone chan struct{}
 
+	// state is used to indicate whether the Rego is opened or closed.
 	state int32
 
+	// options is used to store customized options.
 	options options
 }
 
+// New instantiates a Rego with customized options.
+// The size parameter specifies the capacity of Rego, which is the
+// maximum number of workers that can execute tasks concurrently.
 func New(size int, opts ...Option) *Rego {
 	// Require at least one worker.
 	if size < 1 {
@@ -76,6 +90,7 @@ func New(size int, opts ...Option) *Rego {
 	return r
 }
 
+// Submit submits a task to the Rego.
 func (r *Rego) Submit(task func()) {
 	if r.IsClosed() || task == nil {
 		return
@@ -84,6 +99,7 @@ func (r *Rego) Submit(task func()) {
 	r.submit <- task
 }
 
+// SubmitWait submits a task to the Rego and waits for it to complete.
 func (r *Rego) SubmitWait(task func()) {
 	if r.IsClosed() || task == nil {
 		return
@@ -97,30 +113,37 @@ func (r *Rego) SubmitWait(task func()) {
 	<-done
 }
 
+// Cap returns the capacity of Rego.
 func (r *Rego) Cap() int {
 	return r.capacity
 }
 
+// Running returns the number of currently running workers.
 func (r *Rego) Running() int {
 	return int(atomic.LoadInt32(&r.running))
 }
 
+// Waiting returns the number of tasks waiting to be executed.
 func (r *Rego) Waiting() int {
 	return int(atomic.LoadInt32(&r.waiting))
 }
 
+// MinWorkers returns the minimum number of workers that can keep alive.
 func (r *Rego) MinWorkers() int {
 	return r.options.minWorkers
 }
 
+// Release closes the Rego but ignores all waiting tasks.
 func (r *Rego) Release() {
 	r.release(false)
 }
 
+// ReleaseWait closes the Rego and waits for all tasks to complete.
 func (r *Rego) ReleaseWait() {
 	r.release(true)
 }
 
+// IsClosed returns whether the Rego is closed.
 func (r *Rego) IsClosed() bool {
 	return atomic.LoadInt32(&r.state) == Closed
 }
