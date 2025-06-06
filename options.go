@@ -18,6 +18,7 @@ package rego
 
 import "time"
 
+// Option represents the optional function.
 type Option func(*options)
 
 type options struct {
@@ -25,12 +26,14 @@ type options struct {
 	idleTimeout time.Duration
 }
 
+// WithMinWorkers sets the minimum number of workers.
 func WithMinWorkers(minWorkers int) Option {
 	return func(o *options) {
 		o.minWorkers = minWorkers
 	}
 }
 
+// WithIdleTimeout sets the idle timeout.
 func WithIdleTimeout(idleTimeout time.Duration) Option {
 	return func(o *options) {
 		o.idleTimeout = idleTimeout
