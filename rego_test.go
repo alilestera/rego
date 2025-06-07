@@ -17,6 +17,8 @@
 package rego_test
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,47 +28,129 @@ import (
 	"github.com/alilestera/rego"
 )
 
-func TestSubmit(t *testing.T) {
-	defer goleak.VerifyNone(t)
-	r := rego.New(3)
+var (
+	shortTerm = 10
+	regoCap   = 10000
+	n         = 100000
+)
 
-	requests := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
-	respChan := make(chan string, len(requests))
-	for _, req := range requests {
+// demoFunc is used to simulate a task that takes a certain amount of time to complete.
+func demoFunc(n int) {
+	time.Sleep(time.Duration(n) * time.Millisecond)
+}
+
+func TestRegoSubmit(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	r := rego.New(regoCap)
+	defer r.ReleaseWait()
+
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
 		r.Submit(func() {
-			time.Sleep(100 * time.Millisecond)
-			respChan <- req
+			defer wg.Done()
+			demoFunc(shortTerm)
 		})
 	}
-	r.ReleaseWait()
-	close(respChan)
+	wg.Wait()
+}
 
-	respSet := make(map[string]bool)
-	for resp := range respChan {
-		respSet[resp] = true
+func TestRegoSubmitWait(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	r := rego.New(regoCap)
+	defer r.ReleaseWait()
+
+	var num int
+	for range n {
+		r.SubmitWait(func() {
+			num++
+		})
 	}
 
-	assert.Equal(t, len(requests), len(respSet))
-	for _, req := range requests {
-		if !respSet[req] {
-			assert.Truef(t, respSet[req], "expected response %s, but not found", req)
-		}
+	assert.Equal(t, n, num)
+}
+
+func TestRegoReleaseCompleteWaiting(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	r := rego.New(regoCap)
+	var num int32
+	var wg sync.WaitGroup
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.Submit(func() {
+				atomic.AddInt32(&num, 1)
+			})
+		}()
+	}
+	wg.Wait()
+	r.ReleaseWait()
+
+	assert.Equal(t, n, int(num))
+}
+
+func TestRegoReleaseIgnoreWaiting(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	r := rego.New(regoCap)
+	var num int32
+	var wg sync.WaitGroup
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.Submit(func() {
+				atomic.AddInt32(&num, 1)
+			})
+		}()
+	}
+	wg.Wait()
+	r.Release()
+
+	if r.Waiting() > 0 {
+		assert.NotEqual(t, n, int(num), "must be some tasks are ignored when waiting queue not empty")
 	}
 }
 
-func TestRegoMaxWorkers(t *testing.T) {
+func TestRegoCapacity(t *testing.T) {
 	defer goleak.VerifyNone(t)
-	maxWorkers := 5
-	r := rego.New(maxWorkers)
-	defer r.ReleaseWait()
 
-	for range maxWorkers * 10 {
+	r := rego.New(0)
+	defer r.Release()
+	assert.Equal(t, 1, r.Cap(), "capacity should be at least one")
+
+	r = rego.New(regoCap)
+	defer r.Release()
+	assert.Equal(t, regoCap, r.Cap(), "capacity should be equal to the specified value %d", regoCap)
+}
+
+func TestRegoWithMinWorkers(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	minimum := 1000
+	// Set up very short-term idle timeout to let dispatcher try to release workers.
+	r := rego.New(regoCap, rego.WithMinWorkers(minimum), rego.WithIdleTimeout(time.Millisecond))
+	defer r.Release()
+	assert.Equal(t, minimum, r.MinWorkers(), "minimum workers should be equal to %d", minimum)
+
+	var wg sync.WaitGroup
+	for range minimum {
+		wg.Add(1)
 		r.Submit(func() {
-			running := r.Running()
-			if running > maxWorkers {
-				t.Errorf("running workers exceeded maxWorkers: %d > %d", running, maxWorkers)
-			}
-			time.Sleep(10 * time.Millisecond)
+			defer wg.Done()
+			demoFunc(shortTerm)
 		})
 	}
+	wg.Wait()
+
+	// Make sure that idle timeout is exceeded and workers are tried to be released.
+	time.Sleep(100 * time.Millisecond)
+
+	assert.GreaterOrEqual(t, r.Running(), minimum, "minWorkers should greater or equal than %d", minimum)
 }
