@@ -28,17 +28,6 @@ import (
 	"github.com/alilestera/rego"
 )
 
-var (
-	shortTerm = 10
-	regoCap   = 10000
-	n         = 100000
-)
-
-// demoFunc is used to simulate a task that takes a certain amount of time to complete.
-func demoFunc(n int) {
-	time.Sleep(time.Duration(n) * time.Millisecond)
-}
-
 func TestRegoSubmit(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -46,11 +35,11 @@ func TestRegoSubmit(t *testing.T) {
 	defer r.ReleaseWait()
 
 	var wg sync.WaitGroup
-	for range n {
+	for range tasks {
 		wg.Add(1)
 		r.Submit(func() {
-			defer wg.Done()
-			demoFunc(shortTerm)
+			demoFunc()
+			wg.Done()
 		})
 	}
 	wg.Wait()
@@ -63,13 +52,13 @@ func TestRegoSubmitWait(t *testing.T) {
 	defer r.ReleaseWait()
 
 	var num int
-	for range n {
+	for range tasks {
 		r.SubmitWait(func() {
 			num++
 		})
 	}
 
-	assert.Equal(t, n, num)
+	assert.Equal(t, tasks, num)
 }
 
 func TestRegoReleaseCompleteWaiting(t *testing.T) {
@@ -79,19 +68,19 @@ func TestRegoReleaseCompleteWaiting(t *testing.T) {
 	var num int32
 	var wg sync.WaitGroup
 
-	for range n {
+	for range tasks {
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			r.Submit(func() {
 				atomic.AddInt32(&num, 1)
 			})
+			wg.Done()
 		}()
 	}
 	wg.Wait()
 	r.ReleaseWait()
 
-	assert.Equal(t, n, int(num))
+	assert.Equal(t, tasks, int(num))
 }
 
 func TestRegoReleaseIgnoreWaiting(t *testing.T) {
@@ -101,20 +90,20 @@ func TestRegoReleaseIgnoreWaiting(t *testing.T) {
 	var num int32
 	var wg sync.WaitGroup
 
-	for range n {
+	for range tasks {
 		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			r.Submit(func() {
 				atomic.AddInt32(&num, 1)
 			})
+			wg.Done()
 		}()
 	}
 	wg.Wait()
 	r.Release()
 
 	if r.Waiting() > 0 {
-		assert.NotEqual(t, n, int(num), "must be some tasks are ignored when waiting queue not empty")
+		assert.NotEqual(t, tasks, int(num), "must be some tasks are ignored when waiting queue not empty")
 	}
 }
 
@@ -143,8 +132,8 @@ func TestRegoWithMinWorkers(t *testing.T) {
 	for range minimum {
 		wg.Add(1)
 		r.Submit(func() {
-			defer wg.Done()
-			demoFunc(shortTerm)
+			demoFunc()
+			wg.Done()
 		})
 	}
 	wg.Wait()
