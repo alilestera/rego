@@ -134,11 +134,13 @@ func (r *Rego) MinWorkers() int {
 }
 
 // Release closes the Rego but ignores all waiting tasks.
+// Tasks should not be submitted after closing the Rego.
 func (r *Rego) Release() {
 	r.release(false)
 }
 
 // ReleaseWait closes the Rego and waits for all tasks to complete.
+// Tasks should not be submitted after closing the Rego.
 func (r *Rego) ReleaseWait() {
 	r.release(true)
 }
