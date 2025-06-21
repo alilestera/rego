@@ -52,6 +52,8 @@ type Rego struct {
 
 	// options is used to store customized options.
 	options options
+
+	Stop int
 }
 
 // New instantiates a Rego with customized options.
@@ -174,10 +176,6 @@ func (r *Rego) dispatch() {
 
 loop:
 	for {
-		if r.Running() < r.Cap() {
-			wg.Add(1)
-			r.runWorker(r.task, &wg)
-		}
 		// If there are tasks in the waiting queue, the number of workers has
 		// reached maxWorkers. These tasks are executed first, and incoming
 		// tasks are pushed to the waiting queue.
@@ -203,7 +201,13 @@ loop:
 			select {
 			case r.task <- fn:
 			default:
-				r.enqueueWaiting(fn)
+				if r.Running() < r.Cap() {
+					wg.Add(1)
+					r.runWorker(r.task, &wg)
+					r.task <- fn
+				} else {
+					r.enqueueWaiting(fn)
+				}
 			}
 		case <-timeout.C:
 			if r.Running() > r.MinWorkers() {
@@ -253,6 +257,7 @@ func (r *Rego) runWorker(task <-chan func(), wg *sync.WaitGroup) {
 func (r *Rego) tryReleaseWorker() {
 	select {
 	case r.task <- nil:
+		r.Stop++
 	default:
 	}
 }
